@@ -1,0 +1,103 @@
+
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, to_date, countDistinct, lit, when
+import pandas as pd
+import matplotlib.pyplot as plt
+
+
+spark = SparkSession.builder.appName("AdvancedOnlineRetailETL").getOrCreate()
+
+
+df = spark.read.csv("dbfs:/FileStore/tables/Online_Retail.csv", header=True, inferSchema=True)
+
+
+df.printSchema()  
+df.show(5)  
+
+
+df_cleaned = df.dropna(subset=['InvoiceNo', 'StockCode', 'Description', 'Quantity', 'UnitPrice', 'CustomerID'])
+df_cleaned = df_cleaned.withColumn("Quantity", col("Quantity").cast("integer"))
+df_cleaned = df_cleaned.withColumn("UnitPrice", col("UnitPrice").cast("double"))
+df_cleaned = df_cleaned.withColumn("TotalValue", col("Quantity") * col("UnitPrice"))
+
+
+df_cleaned = df_cleaned.withColumn("InvoiceDate", to_date(col("InvoiceDate"), "MM/dd/yyyy"))
+
+
+customer_frequency = df_cleaned.groupBy("CustomerID").agg(countDistinct("InvoiceNo").alias("PurchaseCount"))
+df_cleaned = df_cleaned.join(customer_frequency, on="CustomerID", how="left")
+
+
+df_cleaned = df_cleaned.withColumn(
+    "CustomerType",
+    when(col("PurchaseCount") > 1, lit("B2B")).otherwise(lit("B2C"))
+)
+
+
+distinct_customers = df_cleaned.select("CustomerID", "PurchaseCount", "CustomerType", "InvoiceDate").distinct()
+distinct_customers.show(10)
+
+
+top_products = df_cleaned.groupBy("Description").sum("Quantity").orderBy(col("sum(Quantity)").desc())
+top_products.show(10)
+
+
+sales_trend = df_cleaned.groupBy("InvoiceDate").sum("Quantity").orderBy("sum(Quantity)", ascending=False)
+sales_trend.show(10)
+
+from pyspark.sql.functions import year, month
+df_cleaned = df_cleaned.withColumn("Year", year(col("InvoiceDate")))
+df_cleaned = df_cleaned.withColumn("Month", month(col("InvoiceDate")))
+
+monthly_sales = df_cleaned.groupBy("Year", "Month").sum("Quantity").orderBy("Year", "Month")
+monthly_sales.show(24)
+
+
+df_cleaned = df_cleaned.withColumn("TotalValue", col("Quantity") * col("UnitPrice"))
+
+from pyspark.sql.functions import round, avg
+avg_order_value = df_cleaned.groupBy("CustomerID").agg(round(avg("TotalValue"), 2).alias("Avg Order Value")).orderBy(col("Avg Order Value").desc())
+avg_order_value.show(10)
+
+
+top_products_pd = top_products.limit(10).toPandas()
+
+plt.figure(figsize=(12, 6))
+plt.barh(top_products_pd['Description'], top_products_pd['sum(Quantity)'], color='skyblue')
+plt.xlabel("Total Sales")
+plt.ylabel("Products")
+plt.title("Top 10 Best Selling Product")
+plt.gca().invert_yaxis()
+plt.show()
+
+  
+monthly_sales_pd = monthly_sales.toPandas()
+
+plt.figure(figsize=(14, 6))
+plt.plot(monthly_sales_pd['Month'], monthly_sales_pd['sum(Quantity)'], marker='o', linestyle='-', color='blue')
+plt.xlabel("Month")
+plt.ylabel("Total Sales")
+plt.title("Monthly Sales Trend")
+plt.grid(True)
+plt.show()
+
+customer_type_counts = df_cleaned.groupBy("CustomerType").count().toPandas()
+
+plt.figure(figsize=(8, 6))
+plt.pie(customer_type_counts['count'], labels=customer_type_counts['CustomerType'], autopct='%1.1f%%', colors=['lightcoral', 'skyblue'])
+plt.title("Sales Distribution by Customer Types (B2B vs B2C)")
+plt.show()
+
+  
+from pyspark.sql.functions import dayofweek
+
+df_cleaned = df_cleaned.withColumn("DayOfWeek", dayofweek(col("InvoiceDate")))
+weekly_sales = df_cleaned.groupBy("DayOfWeek").sum("Quantity").orderBy("DayOfWeek").toPandas()
+
+plt.figure(figsize=(10, 6))
+plt.bar(weekly_sales['DayOfWeek'], weekly_sales['sum(Quantity)'], color='orange')
+plt.xlabel("Day of the Week")
+plt.ylabel("Total Sales")
+plt.title("Sales Distribution by Day of the Week")
+plt.show()
+  
